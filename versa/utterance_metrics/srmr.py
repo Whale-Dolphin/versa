@@ -2,18 +2,15 @@
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
 import logging
+
+logger = logging.getLogger(__name__)
+
 import numpy as np
 
 try:
     from srmrpy import srmr  # Import the srmr package for speech quality metrics
-
-    logging.info(
-        "Using the srmr package for evaluation"
-    )  # Log a warning if srmr is successfully imported
 except ImportError:
-    logging.warning(
-        "srmr is not installed. Please use `tools/install_srmr.sh` to install"
-    )
+    logger.info("srmr is not installed. Please use `tools/install_srmr.sh` to install")
     srmr = None
 
 
@@ -34,12 +31,12 @@ def srmr_metric(
     srmr_score = srmr(
         pred_x,
         fs,
-        n_cochlear_filters=23,
-        low_freq=125,
-        min_cf=4,
-        max_cf=128,
-        fast=True,
-        norm=False,
+        n_cochlear_filters=n_cochlear_filters,
+        low_freq=low_freq,
+        min_cf=min_cf,
+        max_cf=max_cf,
+        fast=fast,
+        norm=norm,
     )
 
     return {

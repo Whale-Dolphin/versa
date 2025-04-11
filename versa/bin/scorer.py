@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env python3
 
 # Copyright 2024 Jiatong Shi
@@ -112,6 +110,7 @@ def main():
     gen_files = audio_loader_setup(args.pred, args.io)
 
     # find reference file
+    args.gt = None if args.gt == "None" else args.gt
     if args.gt is not None and not args.no_match:
         gt_files = audio_loader_setup(args.gt, args.io)
     else:
@@ -168,7 +167,9 @@ def main():
         cache_folder=args.cache_folder,
         io=args.io,
     )
-    assert len(corpus_score_modules) > 0 or len(score_modules) > 0, "no scoring function is provided"
+    assert (
+        len(corpus_score_modules) > 0 or len(score_modules) > 0
+    ), "no scoring function is provided"
     if len(corpus_score_modules) > 0:
         corpus_score_info = corpus_scoring(
             args.pred,
@@ -181,6 +182,7 @@ def main():
     else:
         logging.info("No corpus-level scoring function is provided.")
         return
+
 
 if __name__ == "__main__":
     main()

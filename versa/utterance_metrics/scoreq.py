@@ -5,6 +5,8 @@
 
 import logging
 
+logger = logging.getLogger(__name__)
+
 import librosa
 import numpy as np
 import torch
@@ -12,7 +14,7 @@ import torch
 try:
     from scoreq_versa import Scoreq
 except ImportError:
-    logging.warning(
+    logger.info(
         "scoreq is not installed. Please use `tools/install_scoreq.sh` to install"
     )
     Scoreq = None
@@ -20,7 +22,7 @@ except ImportError:
 
 def scoreq_nr_setup(
     data_domain="synthetic",
-    cache_dir="./scoreq_pt-models",
+    cache_dir="versa_cache/scoreq_pt-models",
     use_gpu=False,
 ):
     if use_gpu:

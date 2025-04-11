@@ -2,43 +2,21 @@
 
 # Copyright 2024 Jiatong Shi
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
-import copy
-import fnmatch
 import logging
-import os
-from typing import Dict, List
 
 import kaldiio
 import librosa
-import numpy as np
 import soundfile as sf
 import yaml
 from tqdm import tqdm
 
-
-def find_files(
-    root_dir: str, query: List[str] = ["*.flac", "*.wav"], include_root_dir: bool = True
-) -> Dict[str, str]:
-    """Find files recursively.
-
-    Args:
-        root_dir (str): Root root_dir to find.
-        query (List[str]): Query to find.
-        include_root_dir (bool): If False, root_dir name is not included.
-
-    Returns:
-        Dict[str]: List of found filenames.
-
-    """
-    files = {}
-    for root, _, filenames in os.walk(root_dir, followlinks=True):
-        for q in query:
-            for filename in fnmatch.filter(filenames, q):
-                value = os.path.join(root, filename)
-                if not include_root_dir:
-                    value = value.replace(root_dir + "/", "")
-                files[filename] = value
-    return files
+from versa.utils_shared import (
+    check_all_same,
+    check_minimum_length,
+    find_files,
+    load_audio,
+    wav_normalize,
+)
 
 
 def audio_loader_setup(audio, io):
@@ -58,55 +36,6 @@ def audio_loader_setup(audio, io):
                     )
                 audio_files[key] = value
     return audio_files
-
-
-def check_all_same(array):
-    try:
-        return np.all(array == array[0])
-    except IndexError:
-        logging.warning("Detect an empty audio")
-        return True
-
-
-def wav_normalize(wave_array):
-    if wave_array.ndim > 1:
-        wave_array = wave_array[:, 0]
-        logging.warning(
-            "detect multi-channel data for mcd-f0 caluclation, use first channel"
-        )
-    if wave_array.dtype != np.int16:
-        return np.ascontiguousarray(copy.deepcopy(wave_array.astype(np.float64)))
-    # Convert the integer samples to floating-point numbers
-    data_float = wave_array.astype(np.float64)
-
-    # Normalize the floating-point numbers to the range [-1.0, 1.0]
-    max_int16 = np.iinfo(np.int16).max
-    normalized_data = data_float / max_int16
-    return np.ascontiguousarray(copy.deepcopy(normalized_data))
-
-
-def check_minimum_length(length, key_info):
-    if "stoi" in key_info:
-        # NOTE(jiatong): explicitly 0.256s as in https://github.com/mpariente/pystoi/pull/24
-        if length < 0.3:
-            return False
-    if "pesq" in key_info:
-        # NOTE(jiatong): check https://github.com/ludlows/PESQ/blob/master/pesq/cypesq.pyx#L37-L46
-        if length < 0.25:
-            return False
-    if "visqol" in key_info:
-        # NOTE(jiatong): check https://github.com/google/visqol/blob/master/src/image_patch_creator.cc#L50-L72
-        if length < 1.0:
-            return False
-    if "sheet" in key_info:
-        # NOTE(jiatong): check https://github.com/unilight/sheet/blob/main/hubconf.py#L13-L15
-        if length < 0.065:
-            return False
-    if "squim_ref" in key_info or "squim_no_ref" in key_info:
-        # NOTE(jiatong): a fix related to kernel size
-        if length < 0.1:
-            return False
-    return True
 
 
 def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=False):
@@ -157,6 +86,24 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
             score_modules["warpq"] = {"model": warpq_setup(), "module": warpq}
             logging.info("Initiate WARP-Q metric...")
 
+        elif config["name"] == "nisqa":
+
+            logging.info("Loading NISQA evaluation...")
+            from versa.utterance_metrics.nisqa import nisqa_metric, nisqa_model_setup
+
+            # Load the NISQA model
+            nisqa_model = nisqa_model_setup(
+                nisqa_model_path=config.get(
+                    "model_path", "./tools/NISQA/weights/nisqa.tar"
+                ),
+                use_gpu=use_gpu,
+            )
+            score_modules["nisqa"] = {
+                "module": nisqa_metric,
+                "model": nisqa_model,
+            }
+            logging.info("Initiate NISQA evaluation successfully.")
+
         elif config["name"] == "discrete_speech":
             if not use_gt:
                 logging.warning(
@@ -169,9 +116,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
 
             score_modules["discrete_speech"] = {
                 "module": discrete_speech_metric,
-                "args": {
-                    "discrete_speech_predictors": discrete_speech_setup(use_gpu=use_gpu)
-                },
+                "model": discrete_speech_setup(use_gpu=use_gpu),
             }
             logging.info("Initiate discrete speech evaluation successfully.")
 
@@ -201,7 +146,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 )
                 continue
 
-            logging.info("Loadding pesq evaluation...")
+            logging.info("Loading pesq evaluation...")
             from versa import pesq_metric
 
             score_modules["pesq"] = {"module": pesq_metric}
@@ -218,6 +163,19 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
             from versa import stoi_metric
 
             score_modules["stoi"] = {"module": stoi_metric}
+            logging.info("Initiate stoi evaluation successfully.")
+
+        elif config["name"] == "estoi":
+            if not use_gt:
+                logging.warning(
+                    "Cannot use estoi metric because no gt audio is provided"
+                )
+                continue
+
+            logging.info("Loading stoi evaluation...")
+            from versa import estoi_metric
+
+            score_modules["estoi"] = {"module": estoi_metric}
             logging.info("Initiate stoi evaluation successfully.")
 
         elif config["name"] == "visqol":
@@ -287,7 +245,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 logging.warning("Cannot use squim_ref because no gt audio is provided")
                 continue
 
-            logging.info("Loadding squim metrics with reference")
+            logging.info("Loading squim metrics with reference")
             from versa import squim_metric
 
             score_modules["squim_ref"] = {
@@ -297,7 +255,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
 
         elif config["name"] == "squim_no_ref":
 
-            logging.info("Loadding squim metrics with reference")
+            logging.info("Loading squim metrics with reference")
             from versa import squim_metric_no_ref
 
             score_modules["squim_no_ref"] = {
@@ -310,7 +268,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 logging.warning("Cannot use espnet_wer because no gt text is provided")
                 continue
 
-            logging.info("Loadding espnet_wer metric with reference text")
+            logging.info("Loading espnet_wer metric with reference text")
             from versa import espnet_levenshtein_metric, espnet_wer_setup
 
             score_modules["espnet_wer"] = {
@@ -329,7 +287,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 logging.warning("Cannot use owsm_wer because no gt text is provided")
                 continue
 
-            logging.info("Loadding owsm_wer metric with reference text")
+            logging.info("Loading owsm_wer metric with reference text")
             from versa import owsm_levenshtein_metric, owsm_wer_setup
 
             score_modules["owsm_wer"] = {
@@ -348,11 +306,14 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 logging.warning("Cannot use whisper_wer because no gt text is provided")
                 continue
 
-            logging.info("Loadding whisper_wer metric with reference text")
+            logging.info("Loading whisper_wer metric with reference text")
             from versa import whisper_levenshtein_metric, whisper_wer_setup
 
             # Load whisper model if it is already loaded
-            if "speaking_rate" or "asr_matching" in score_modules.keys():
+            if (
+                "speaking_rate" in score_modules.keys()
+                or "asr_matching" in score_modules.keys()
+            ):
                 args_cache = score_modules["speaking_rate"]["args"]
             else:
                 args_cache = whisper_wer_setup(
@@ -373,7 +334,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 logging.warning("Cannot use scoreq_ref because no gt audio is provided")
                 continue
 
-            logging.info("Loadding scoreq metrics with reference")
+            logging.info("Loading scoreq metrics with reference")
             from versa import scoreq_ref, scoreq_ref_setup
 
             model = scoreq_ref_setup(
@@ -389,7 +350,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
             logging.info("Initiate scoreq (with reference) successfully")
 
         elif config["name"] == "scoreq_nr":
-            logging.info("Loadding scoreq metrics without reference")
+            logging.info("Loading scoreq metrics without reference")
             from versa import scoreq_nr, scoreq_nr_setup
 
             model = scoreq_nr_setup(
@@ -405,7 +366,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
             logging.info("Initiate scoreq (with reference) successfully")
 
         elif config["name"] == "nomad":
-            logging.info("Loadding nomad metrics with reference")
+            logging.info("Loading nomad metrics with reference")
             from versa import nomad, nomad_setup
 
             model = nomad_setup(
@@ -426,7 +387,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 )
                 continue
 
-            logging.info("Loadding emo2vec metrics with reference")
+            logging.info("Loading emo2vec metrics with reference")
             from versa import emo2vec_setup, emo_sim
 
             model = emo2vec_setup(
@@ -442,7 +403,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
             logging.info("Initiate emo2vec successfully")
 
         elif config["name"] == "se_snr":
-            logging.info("Loadding se_snr metrics with reference")
+            logging.info("Loading se_snr metrics with reference")
             from versa import se_snr, se_snr_setup
 
             model = se_snr_setup(
@@ -465,16 +426,17 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
             pam_model = pam_model_setup(model_config=config, use_gpu=use_gpu)
             score_modules["pam"] = {
                 "module": pam_metric,
-                "args": {"model": pam_model},
+                "model": pam_model,
             }
             logging.info("Initiate pam metric successfully.")
         elif config["name"] == "vad":
             logging.info("Loading vad metric without reference...")
             from versa.utterance_metrics.vad import vad_metric, vad_model_setup
+
             vad_model = vad_model_setup(
                 threshold=config.get("threshold", 0.5),
                 min_speech_duration_ms=config.get("min_speech_duration_ms", 250),
-                max_speech_duration_s=config.get("max_speech_duration_s", float('inf')),
+                max_speech_duration_s=config.get("max_speech_duration_s", float("inf")),
                 min_silence_duration_ms=config.get("min_silence_duration_ms", 100),
                 speech_pad_ms=config.get("speech_pad_ms", 30),
             )
@@ -485,15 +447,17 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
             logging.info("Initiate vad metric successfully.")
 
         elif config["name"] == "asvspoof_score":
-           
+
             logging.info("Loading asvspoof score metric without reference...")
-            from versa.utterance_metrics.asvspoof_score import asvspoof_metric, deepfake_detection_model_setup
-            deepfake_detection_model = deepfake_detection_model_setup(
-                use_gpu=use_gpu
+            from versa.utterance_metrics.asvspoof_score import (
+                asvspoof_metric,
+                deepfake_detection_model_setup,
             )
+
+            deepfake_detection_model = deepfake_detection_model_setup(use_gpu=use_gpu)
             score_modules["asvspoof_score"] = {
                 "module": asvspoof_metric,
-                "args": {"model": deepfake_detection_model},
+                "model": deepfake_detection_model,
             }
             logging.info("Initiate asvspoof score metric successfully.")
 
@@ -502,7 +466,7 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 logging.warning("Cannot use pysepm because no gt audio is provided")
                 continue
 
-            logging.info("Loadding pysepm metrics with reference")
+            logging.info("Loading pysepm metrics with reference")
             from versa import pysepm_metric
 
             score_modules["pysepm"] = {
@@ -513,9 +477,9 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 },
             }
             logging.info("Initiate pysepm successfully")
-        
+
         elif config["name"] == "srmr":
-            logging.info("Loadding srmr metrics with reference")
+            logging.info("Loading srmr metrics with reference")
             from versa import srmr_metric
 
             score_modules["srmr"] = {
@@ -536,14 +500,16 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 logging.warning("Cannot use noresqa because no gt audio is provided")
                 continue
 
-            logging.info("Loadding noresqa metrics with reference")
+            logging.info("Loading noresqa metrics with reference")
 
             from versa.utterance_metrics.noresqa import (
                 noresqa_metric,
                 noresqa_model_setup,
             )
 
-            noresqa_model = noresqa_model_setup(use_gpu=use_gpu)
+            noresqa_model = noresqa_model_setup(
+                metric_type=config.get("metric_type", 0), use_gpu=use_gpu
+            )
             score_modules["noresqa"] = {
                 "module": noresqa_metric,
                 "args": {
@@ -552,9 +518,9 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 },
             }
             logging.info("Initiate noresqa score metric successfully.")
-        
+
         elif config["name"] == "speaking_rate":
-            logging.info("Loadding speaking rate metrics without reference")
+            logging.info("Loading speaking rate metrics without reference")
             from versa import speaking_rate_metric, speaking_rate_model_setup
 
             # Load whisper model if it is already loaded
@@ -573,13 +539,13 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
                 "args": speaking_rate_model,
             }
             logging.info("Initiate speaking rate metric successfully.")
-        
+
         elif config["name"] == "asr_match":
             if not use_gt:
                 logging.warning("Cannot use asr_match because no gt audio is provided")
                 continue
 
-            logging.info("Loadding asr_match metric with reference text")
+            logging.info("Loading asr_match metric with reference text")
             from versa import asr_match_metric, asr_match_setup
 
             # Load whisper model if it is already loaded
@@ -601,27 +567,275 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
             }
             logging.info("Initiate asr_match metric successfully")
 
+        elif config["name"] == "lid":
+            logging.info("Loading language identification metric")
+            from versa import language_id, owsm_lid_model_setup
+
+            owsm_model = owsm_lid_model_setup(
+                model_tag=config.get("model_tag", "default"),
+                nbest=config.get("nbest", 3),
+                use_gpu=use_gpu,
+            )
+
+            score_modules["lid"] = {
+                "module": language_id,
+                "args": owsm_model,
+            }
+
+        elif config["name"] == "audiobox_aesthetics":
+            logging.info("Loading audiobox aesthetics metric")
+            from versa import audiobox_aesthetics_score, audiobox_aesthetics_setup
+
+            audiobox_model = audiobox_aesthetics_setup(
+                model_path=config.get("model_path", None),
+                batch_size=config.get("batch_size", 1),
+                precision=config.get("precision", "bf16"),
+                cache_dir=config.get("cache_dir", "versa_cache/audiobox"),
+                use_huggingface=config.get("use_huggingface", True),
+                use_gpu=use_gpu,
+            )
+
+            score_modules["audiobox_aesthetics"] = {
+                "module": audiobox_aesthetics_score,
+                "args": {"model": audiobox_model},
+            }
+            logging.info("Initiate audiobox aesthetics metric successfully")
+
+        elif "qwen2_audio" in config["name"]:
+            logging.info("Loading qwen2-audio model")
+            from versa import qwen2_model_setup
+
+            if "qwen2_audio" not in score_modules.keys():
+                qwen_model = qwen2_model_setup(
+                    model_tag=config.get("model_tag", "default"),
+                )
+                score_modules["qwen2_audio"] = {
+                    "module": qwen_model,
+                    "start_prompt": config.get("start_prompt", None),
+                }
+
+            # 1. Speaker Characteristics
+            if config["name"] == "qwen2_audio_speaker_count":
+                from versa import qwen2_speaker_count_metric
+
+                score_modules["qwen2_audio_speaker_count"] = {
+                    "module": qwen2_speaker_count_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_speaker_gender":
+                from versa import qwen2_speaker_gender_metric
+
+                score_modules["qwen2_audio_speaker_gender"] = {
+                    "module": qwen2_speaker_gender_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_speaker_age":
+                from versa import qwen2_speaker_age_metric
+
+                score_modules["qwen2_audio_speaker_age"] = {
+                    "module": qwen2_speaker_age_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_speech_impairment":
+                from versa import qwen2_speech_impairment_metric
+
+                score_modules["qwen2_audio_speech_impairment"] = {
+                    "module": qwen2_speech_impairment_metric,
+                    "prompt": config.get("prompt", None),
+                }
+
+            # 2. Voice Properties
+            elif config["name"] == "qwen2_audio_voice_pitch":
+                from versa import qwen2_voice_pitch_metric
+
+                score_modules["qwen2_audio_voice_pitch"] = {
+                    "module": qwen2_voice_pitch_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_pitch_range":
+                from versa import qwen2_pitch_range_metric
+
+                score_modules["qwen2_audio_pitch_range"] = {
+                    "module": qwen2_pitch_range_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_voice_type":
+                from versa import qwen2_voice_type_metric
+
+                score_modules["qwen2_audio_voice_type"] = {
+                    "module": qwen2_voice_type_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_speech_volume_level":
+                from versa import qwen2_speech_volume_level_metric
+
+                score_modules["qwen2_audio_speech_volume_level"] = {
+                    "module": qwen2_speech_volume_level_metric,
+                    "prompt": config.get("prompt", None),
+                }
+
+            # 3. Speech Content
+            elif config["name"] == "qwen2_audio_language":
+                from versa import qwen2_language_metric
+
+                score_modules["qwen2_audio_language"] = {
+                    "module": qwen2_language_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_speech_register":
+                from versa import qwen2_speech_register_metric
+
+                score_modules["qwen2_audio_speech_register"] = {
+                    "module": qwen2_speech_register_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_vocabulary_complexity":
+                from versa import qwen2_vocabulary_complexity_metric
+
+                score_modules["qwen2_audio_vocabulary_complexity"] = {
+                    "module": qwen2_vocabulary_complexity_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_speech_purpose":
+                from versa import qwen2_speech_purpose_metric
+
+                score_modules["qwen2_audio_speech_purpose"] = {
+                    "module": qwen2_speech_purpose_metric,
+                    "prompt": config.get("prompt", None),
+                }
+
+            # 4. Speech Delivery
+            elif config["name"] == "qwen2_audio_speech_emotion":
+                from versa import qwen2_speech_emotion_metric
+
+                score_modules["qwen2_audio_speech_emotion"] = {
+                    "module": qwen2_speech_emotion_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_speech_clarity":
+                from versa import qwen2_speech_clarity_metric
+
+                score_modules["qwen2_audio_speech_clarity"] = {
+                    "module": qwen2_speech_clarity_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_speech_rate":
+                from versa import qwen2_speech_rate_metric
+
+                score_modules["qwen2_audio_speech_rate"] = {
+                    "module": qwen2_speech_rate_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_speaking_style":
+                from versa import qwen2_speaking_style_metric
+
+                score_modules["qwen2_audio_speaking_style"] = {
+                    "module": qwen2_speaking_style_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_laughter_crying":
+                from versa import qwen2_laughter_crying_metric
+
+                score_modules["qwen2_audio_laughter_crying"] = {
+                    "module": qwen2_laughter_crying_metric,
+                    "prompt": config.get("prompt", None),
+                }
+
+            # 5. Interaction Patterns
+            elif config["name"] == "qwen2_audio_overlapping_speech":
+                from versa import qwen2_overlapping_speech_metric
+
+                score_modules["qwen2_audio_overlapping_speech"] = {
+                    "module": qwen2_overlapping_speech_metric,
+                    "prompt": config.get("prompt", None),
+                }
+
+            # 6. Recording Environment
+            elif config["name"] == "qwen2_audio_speech_background_environment":
+                from versa import qwen2_speech_background_environment_metric
+
+                score_modules["qwen2_audio_speech_background_environment"] = {
+                    "module": qwen2_speech_background_environment_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_recording_quality":
+                from versa import qwen2_recording_quality_metric
+
+                score_modules["qwen2_audio_recording_quality"] = {
+                    "module": qwen2_recording_quality_metric,
+                    "prompt": config.get("prompt", None),
+                }
+            elif config["name"] == "qwen2_audio_channel_type":
+                from versa import qwen2_channel_type_metric
+
+                score_modules["qwen2_audio_channel_type"] = {
+                    "module": qwen2_channel_type_metric,
+                    "prompt": config.get("prompt", None),
+                }
+
+            logging.info(
+                "Initiate qwen2 audio metric: {} successfully".format(config["name"])
+            )
     return score_modules
+
+
+def process_cache_info(cache_info, score_modules, output_file):
+    batch_score_info = []
+    for utt_info in cache_info:
+        key, gen_wav, gt_wav, gen_sr, text = utt_info
+        utt_score = {"key": key}
+        utt_score.update(
+            use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text)
+        )
+        batch_score_info.append(utt_score)
+        if output_file is not None:
+            output_file.write(f"{utt_score}\n")
+    return batch_score_info
 
 
 def use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text=None):
     utt_score = {}
 
-    # TODO(jiatong): set topology for speaker evaluation
+    # general cache information to reduce recaculation
+    general_cache = {
+        "whisper_hyp_text": None,
+    }
     for key in score_modules.keys():
         if key == "mcd_f0":
             score = score_modules[key]["module"](
                 gen_wav, gt_wav, gen_sr, **score_modules[key]["args"]
             )
         elif key == "signal_metric":
-            score = score_modules[key]["module"](gen_wav, gt_wav)
+            try:
+                score = score_modules[key]["module"](gen_wav, gt_wav)
+            except ValueError as e:
+                logging.warning(
+                    "Value error in signal metric. Usually due to silence audio: {}".format(
+                        e
+                    )
+                )
+                continue
         elif key == "warpq":
             score = score_modules[key]["module"](
                 score_modules[key]["model"], gen_wav, gt_wav, gen_sr
             )
+        elif key == "nisqa":
+            try:
+                score = score_modules[key]["module"](
+                    score_modules[key]["model"],
+                    gen_wav,
+                    gen_sr,
+                )
+            except ValueError as e:
+                logging.warning(
+                    "Value error in NISQA metric. Usually due to silence audio: {}".format(
+                        e
+                    )
+                )
+                continue
         elif key == "discrete_speech":
             score = score_modules[key]["module"](
-                score_modules[key]["args"]["discrete_speech_predictors"],
+                score_modules[key]["model"],
                 gen_wav,
                 gt_wav,
                 gen_sr,
@@ -630,9 +844,7 @@ def use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text=None):
             score = score_modules[key]["module"](
                 gen_wav, gen_sr, **score_modules[key]["args"]
             )
-        elif key == "pesq":
-            score = score_modules[key]["module"](gen_wav, gt_wav, gen_sr)
-        elif key == "stoi":
+        elif key in ["pesq", "stoi", "estoi"]:
             score = score_modules[key]["module"](gen_wav, gt_wav, gen_sr)
         elif key == "visqol":
             score = score_modules[key]["module"](
@@ -668,31 +880,21 @@ def use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text=None):
                 text,
                 gen_sr,
             )
-        elif key == "scoreq_ref":
+            if key == "whisper_wer":
+                general_cache["whisper_hyp_text"] = score["whisper_hyp_text"]
+        elif key in ["scoreq_ref", "emotion"]:
             score = score_modules[key]["module"](
                 score_modules[key]["model"], gen_wav, gt_wav, gen_sr
             )
-        elif key == "scoreq_nr":
+        elif key in ["scoreq_nr", "se_snr"]:
             score = score_modules[key]["module"](
                 score_modules[key]["model"], gen_wav, gen_sr
             )
-        elif key == "emotion":
+        elif key in ["pam", "asvspoof_score"]:
             score = score_modules[key]["module"](
-                score_modules[key]["model"], gen_wav, gt_wav, gen_sr
+                score_modules[key]["model"], gen_wav, fs=gen_sr
             )
-        elif key == "se_snr":
-            score = score_modules[key]["module"](
-                score_modules[key]["model"], gen_wav, gen_sr
-            )
-        elif key == "pam":
-            score = score_modules[key]["module"](
-                score_modules[key]["args"]["model"], gen_wav, fs=gen_sr
-            )
-        elif key == "asvspoof_score":
-            score = score_modules[key]["module"](
-                score_modules[key]["args"]["model"], gen_wav, fs=gen_sr
-            )
-        elif key == "vad":
+        elif key in ["vad", "lid"]:
             score = score_modules[key]["module"](
                 score_modules[key]["args"],
                 gen_wav,
@@ -703,10 +905,16 @@ def use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text=None):
         elif key == "srmr":
             score = score_modules[key]["module"](gen_wav, fs=gen_sr)
         elif key == "noresqa":
-            score = score_modules[key]["module"](gen_wav, gt_wav, fs=gen_sr)
+            score = score_modules[key]["module"](
+                score_modules[key]["args"]["model"],
+                gen_wav,
+                gt_wav,
+                fs=gen_sr,
+                metric_type=score_modules[key]["args"]["metric_type"],
+            )
         elif key == "speaking_rate":
             cache_text = None
-            if utt_score.get("whisper_hyp_text", None) is not None:
+            if general_cache.get("whisper_hyp_text", None) is not None:
                 cache_text = utt_score["whisper_hyp_text"]
             score = score_modules[key]["module"](
                 score_modules[key]["args"],
@@ -714,12 +922,12 @@ def use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text=None):
                 cache_text,
                 gen_sr,
             )
+            if cache_text is None:
+                general_cache["whisper_hyp_text"] = score["whisper_hyp_text"]
         elif key == "asr_match":
             cache_text = None
-            if utt_score.get("whisper_hyp_text", None) is not None:
+            if general_cache.get("whisper_hyp_text", None) is not None:
                 cache_text = utt_score["whisper_hyp_text"]
-            elif utt_score.get("speaking_rate_text", None) is not None:
-                cache_text = utt_score["speaking_rate_text"]
             score = score_modules[key]["module"](
                 score_modules[key]["args"],
                 gen_wav,
@@ -727,6 +935,25 @@ def use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text=None):
                 cache_text,
                 gen_sr,
             )
+            if cache_text is None:
+                general_cache["whisper_hyp_text"] = score["whisper_hyp_text"]
+        elif key == "audiobox_aesthetics":
+            score = score_modules[key]["module"](
+                score_modules[key]["args"]["model"],
+                gen_wav,
+                gen_sr,
+            )
+        elif "qwen2_audio" in key:
+            if key == "qwen2_audio":
+                continue  # skip the base model, only use the specific metrics
+            # Support qwen2_audio metrics
+            score = score_modules[key]["module"](
+                score_modules["qwen2_audio"]["module"],
+                gen_wav,
+                gen_sr,
+                custom_prompt=score_modules[key]["prompt"],
+            )
+            print("score: {}".format(score), flush=True)
         else:
             raise NotImplementedError(f"Not supported {key}")
 
@@ -742,19 +969,21 @@ def list_scoring(
     text_info=None,
     output_file=None,
     io="kaldi",
+    batch_size=1,
 ):
     if output_file is not None:
         f = open(output_file, "w", encoding="utf-8")
+    else:
+        f = None
 
     score_info = []
+    cache_info = []  # for batch processing
     for key in tqdm(gen_files.keys()):
-        if io == "kaldi":
-            gen_sr, gen_wav = gen_files[key]
-        elif io == "soundfile" or io == "dir":
-            gen_wav, gen_sr = sf.read(gen_files[key])
-        else:
-            raise NotImplementedError("Not supported io type: {}".format(io))
+        # Step1: load source speech and conduct basic checks
+        gen_sr, gen_wav = load_audio(gen_files[key], io)
         gen_wav = wav_normalize(gen_wav)
+
+        # length check
         if not check_minimum_length(gen_wav.shape[0] / gen_sr, score_modules.keys()):
             logging.warning(
                 "audio {} (generated, length {}) is too short to be evaluated with some metric metrics, skipping".format(
@@ -763,23 +992,27 @@ def list_scoring(
             )
             continue
 
+        # Step2: load reference (gt) speech and conduct basic checks
         if gt_files is not None:
-            assert (
-                key in gt_files.keys()
-            ), "key {} not found in ground truth files".format(key)
-        if gt_files is not None:
-            if io == "kaldi":
-                gt_sr, gt_wav = gt_files[key]
-            else:
-                gt_wav, gt_sr = sf.read(gt_files[key])
-            gt_wav = wav_normalize(gt_wav)
-            if check_all_same(gt_wav):
+            if key not in gen_files.keys():
                 logging.warning(
-                    "skip audio with gt {}, as the gt audio has all the same value.".format(
+                    "key {} not found in ground truth files though provided, skipping".format(
                         key
                     )
                 )
                 continue
+
+            gt_sr, gt_wav = load_audio(gt_files[key], io)
+            gt_wav = wav_normalize(gt_wav)
+
+            # check ground truth audio files
+            if check_all_same(gt_wav):
+                logging.warning(
+                    "gt audio of key {} has only the same value, skipping".format(key)
+                )
+                continue
+
+            # length check
             if not check_minimum_length(gt_wav.shape[0] / gt_sr, score_modules.keys()):
                 logging.warning(
                     "audio {} (ground truth, length {}) is too short to be evaluated with many metrics, skipping".format(
@@ -791,36 +1024,47 @@ def list_scoring(
             gt_wav = None
             gt_sr = None
 
+        # Step3: load text information if provided
+        text = None
         if text_info is not None:
-            assert (
-                key in text_info.keys()
-            ), "key {} not found in ground truth transcription".format(key)
-            text = text_info[key]
-        else:
-            text = None
+            if key not in text_info.keys():
+                logging.warning(
+                    "key {} not found in ground truth transcription though provided, skipping".format(
+                        key
+                    )
+                )
+                continue
+            else:
+                text = text_info[key]
 
+        # Step4: check if the sampling rate of generated and gt audio are the same
         if gt_sr is not None and gen_sr > gt_sr:
             logging.warning(
                 "Resampling the generated audio to match the ground truth audio"
             )
             gen_wav = librosa.resample(gen_wav, orig_sr=gen_sr, target_sr=gt_sr)
+            gen_sr = gt_sr
         elif gt_sr is not None and gen_sr < gt_sr:
             logging.warning(
                 "Resampling the ground truth audio to match the generated audio"
             )
             gt_wav = librosa.resample(gt_wav, orig_sr=gt_sr, target_sr=gen_sr)
 
-        utt_score = {"key": key}
+        # Step5: cache for batch processing
+        utterance_info = (key, gen_wav, gt_wav, gen_sr, text)
 
-        utt_score.update(
-            use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text=text)
-        )
-        del gen_wav
-        del gt_wav
+        cache_info.append(utterance_info)
+        if len(cache_info) == batch_size:
+            # Process after a batch is collected
+            score_info.extend(process_cache_info(cache_info, score_modules, f))
+            cache_info = []
+        else:
+            # continue collect the batch
+            continue
 
-        if output_file is not None:
-            f.write(f"{utt_score}\n")
-        score_info.append(utt_score)
+    # Process left-over batch
+    score_info.extend(process_cache_info(cache_info, score_modules, f))
+
     logging.info("Scoring completed and save score at {}".format(output_file))
     return score_info
 
@@ -828,7 +1072,7 @@ def list_scoring(
 def load_summary(score_info):
     summary = {}
     for key in score_info[0].keys():
-        if "text" in key or "vad" in key or key == "key":
+        if "text" in key or "vad" in key or "language" in key or key == "key":
             # NOTE(jiatong): skip text cases
             continue
         summary[key] = sum([score[key] for score in score_info])
@@ -838,9 +1082,7 @@ def load_summary(score_info):
     return summary
 
 
-def load_corpus_modules(
-    score_config, cache_folder=".cache", use_gpu=False, io="kaldi"
-):
+def load_corpus_modules(score_config, cache_folder=".cache", use_gpu=False, io="kaldi"):
     score_modules = {}
     for config in score_config:
         if config["name"] == "fad":
@@ -869,7 +1111,7 @@ def load_corpus_modules(
         elif config["name"] == "kid":
             logging.info("Loading KID evaluation with specific models...")
             from versa import kid_scoring, kid_setup
-            
+
             kid_info = kid_setup(
                 model_tag=config.get("model_tag", "default"),
                 model_path=config.get("model_path", None),
@@ -918,7 +1160,7 @@ def corpus_scoring(
         else:
             raise NotImplementedError("Not supported {}".format(key))
         score_info.update(score_result)
-    
+
     if output_file is not None:
         with open(output_file, "w") as f:
             yaml.dump(score_info, f)

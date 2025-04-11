@@ -11,6 +11,7 @@ from versa.scorer_shared import (
     load_summary,
 )
 
+TEST_INFO = {"nomad": 0.0336}
 
 
 def info_update():
@@ -25,7 +26,7 @@ def info_update():
 
     logging.info("The number of utterances = %d" % len(gen_files))
 
-    with open("egs/separate_metrics/utmos2.yaml", "r", encoding="utf-8") as f:
+    with open("egs/separate_metrics/nomad.yaml", "r", encoding="utf-8") as f:
         score_config = yaml.full_load(f)
 
     score_modules = load_score_modules(
@@ -43,11 +44,11 @@ def info_update():
     print("Summary: {}".format(load_summary(score_info)), flush=True)
 
     for key in summary:
-        if math.isinf(summary[key]):
+        if math.isinf(TEST_INFO[key]) and math.isinf(summary[key]):
             # for sir"
             continue
-        # the utmosv2 is undeterministic
-        if summary[key] > 2:
+        # the plc mos is undeterministic
+        if abs(TEST_INFO[key] - summary[key]) > 1e-4 and key != "plcmos":
             raise ValueError(
                 "Value issue in the test case, might be some issue in scorer {}".format(
                     key
