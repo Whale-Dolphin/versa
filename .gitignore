@@ -159,6 +159,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# VScode
+.vscode
+
 # Additional items
 ./scoreq_pt-models
 *.npy
@@ -177,3 +180,4 @@ fairseq/
 WARP-Q/
 SRMRpy/
 emotion2vec
+test.ipynb

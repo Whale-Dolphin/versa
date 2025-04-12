@@ -1075,7 +1075,9 @@ def load_summary(score_info):
         if "text" in key or "vad" in key or "language" in key or key == "key":
             # NOTE(jiatong): skip text cases
             continue
-        summary[key] = sum([score[key] for score in score_info])
+        for score in score_info:
+            print(score[key])
+            summary[key] = sum([score[key]])
         if "_wer" not in key and "_cer" not in key:
             # Average for non-WER/CER metrics
             summary[key] /= len(score_info)
