@@ -179,6 +179,9 @@ NISQA/
 fairseq/
 WARP-Q/
 SRMRpy/
+visqol/
 emotion2vec
 test.ipynb
 test_result
+output/
+logs/

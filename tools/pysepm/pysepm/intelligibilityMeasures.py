@@ -274,6 +274,6 @@ def ncm(clean_speech,processed_speech,fs):
 
         TI[k]= (asnr[k]+ 15)/ 30 # Eq.10 in [1]
 
-    # WEIGHT=WEIGHT[:-1] # NOTE(jiatong): fix
+    WEIGHT=WEIGHT[:-1] # NOTE(jiatong): fix
     ncm_val= WEIGHT.dot(TI)/np.sum(WEIGHT) # Eq.11
     return ncm_val

@@ -782,14 +782,20 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
 def process_cache_info(cache_info, score_modules, output_file):
     batch_score_info = []
     for utt_info in cache_info:
-        key, gen_wav, gt_wav, gen_sr, text = utt_info
-        utt_score = {"key": key}
-        utt_score.update(
-            use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text)
-        )
-        batch_score_info.append(utt_score)
-        if output_file is not None:
-            output_file.write(f"{utt_score}\n")
+        try:
+            key, gen_wav, gt_wav, gen_sr, text = utt_info
+            utt_score = {"key": key}
+            utt_score.update(
+                use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text)
+            )
+            batch_score_info.append(utt_score)
+            if output_file is not None:
+                output_file.write(f"{utt_score}\n")
+        except Exception as e:
+            logging.warning(
+                f"Error in processing cache info: {e}. Skipping this utterance."
+            )
+            continue
     return batch_score_info
 
 
@@ -975,91 +981,98 @@ def list_scoring(
         f = open(output_file, "w", encoding="utf-8")
     else:
         f = None
+    print(f"Processing:{gen_files}")
 
     score_info = []
     cache_info = []  # for batch processing
     for key in tqdm(gen_files.keys()):
-        # Step1: load source speech and conduct basic checks
-        gen_sr, gen_wav = load_audio(gen_files[key], io)
-        gen_wav = wav_normalize(gen_wav)
-
-        # length check
-        if not check_minimum_length(gen_wav.shape[0] / gen_sr, score_modules.keys()):
-            logging.warning(
-                "audio {} (generated, length {}) is too short to be evaluated with some metric metrics, skipping".format(
-                    key, gen_wav.shape[0] / gen_sr
-                )
-            )
-            continue
-
-        # Step2: load reference (gt) speech and conduct basic checks
-        if gt_files is not None:
-            if key not in gen_files.keys():
-                logging.warning(
-                    "key {} not found in ground truth files though provided, skipping".format(
-                        key
-                    )
-                )
-                continue
-
-            gt_sr, gt_wav = load_audio(gt_files[key], io)
-            gt_wav = wav_normalize(gt_wav)
-
-            # check ground truth audio files
-            if check_all_same(gt_wav):
-                logging.warning(
-                    "gt audio of key {} has only the same value, skipping".format(key)
-                )
-                continue
+        try:
+            # Step1: load source speech and conduct basic checks
+            gen_sr, gen_wav = load_audio(gen_files[key], io)
+            gen_wav = wav_normalize(gen_wav)
 
             # length check
-            if not check_minimum_length(gt_wav.shape[0] / gt_sr, score_modules.keys()):
+            if not check_minimum_length(gen_wav.shape[0] / gen_sr, score_modules.keys()):
                 logging.warning(
-                    "audio {} (ground truth, length {}) is too short to be evaluated with many metrics, skipping".format(
-                        key, gt_wav.shape[0] / gt_sr
+                    "audio {} (generated, length {}) is too short to be evaluated with some metric metrics, skipping".format(
+                        key, gen_wav.shape[0] / gen_sr
                     )
                 )
                 continue
-        else:
-            gt_wav = None
-            gt_sr = None
 
-        # Step3: load text information if provided
-        text = None
-        if text_info is not None:
-            if key not in text_info.keys():
-                logging.warning(
-                    "key {} not found in ground truth transcription though provided, skipping".format(
-                        key
+            # Step2: load reference (gt) speech and conduct basic checks
+            if gt_files is not None:
+                if key not in gen_files.keys():
+                    logging.warning(
+                        "key {} not found in ground truth files though provided, skipping".format(
+                            key
+                        )
                     )
-                )
-                continue
+                    continue
+
+                gt_sr, gt_wav = load_audio(gt_files[key], io)
+                gt_wav = wav_normalize(gt_wav)
+
+                # check ground truth audio files
+                if check_all_same(gt_wav):
+                    logging.warning(
+                        "gt audio of key {} has only the same value, skipping".format(key)
+                    )
+                    continue
+
+                # length check
+                if not check_minimum_length(gt_wav.shape[0] / gt_sr, score_modules.keys()):
+                    logging.warning(
+                        "audio {} (ground truth, length {}) is too short to be evaluated with many metrics, skipping".format(
+                            key, gt_wav.shape[0] / gt_sr
+                        )
+                    )
+                    continue
             else:
-                text = text_info[key]
+                gt_wav = None
+                gt_sr = None
 
-        # Step4: check if the sampling rate of generated and gt audio are the same
-        if gt_sr is not None and gen_sr > gt_sr:
+            # Step3: load text information if provided
+            text = None
+            if text_info is not None:
+                if key not in text_info.keys():
+                    logging.warning(
+                        "key {} not found in ground truth transcription though provided, skipping".format(
+                            key
+                        )
+                    )
+                    continue
+                else:
+                    text = text_info[key]
+
+            # Step4: check if the sampling rate of generated and gt audio are the same
+            if gt_sr is not None and gen_sr > gt_sr:
+                logging.warning(
+                    "Resampling the generated audio to match the ground truth audio"
+                )
+                gen_wav = librosa.resample(gen_wav, orig_sr=gen_sr, target_sr=gt_sr)
+                gen_sr = gt_sr
+            elif gt_sr is not None and gen_sr < gt_sr:
+                logging.warning(
+                    "Resampling the ground truth audio to match the generated audio"
+                )
+                gt_wav = librosa.resample(gt_wav, orig_sr=gt_sr, target_sr=gen_sr)
+
+            # Step5: cache for batch processing
+            utterance_info = (key, gen_wav, gt_wav, gen_sr, text)
+
+            cache_info.append(utterance_info)
+            if len(cache_info) == batch_size:
+                # Process after a batch is collected
+                score_info.extend(process_cache_info(cache_info, score_modules, f))
+                cache_info = []
+            else:
+                # continue collect the batch
+                continue
+        except Exception as e:
             logging.warning(
-                "Resampling the generated audio to match the ground truth audio"
+                "Error in scoring {}: {}".format(gen_files[key], str(e))
             )
-            gen_wav = librosa.resample(gen_wav, orig_sr=gen_sr, target_sr=gt_sr)
-            gen_sr = gt_sr
-        elif gt_sr is not None and gen_sr < gt_sr:
-            logging.warning(
-                "Resampling the ground truth audio to match the generated audio"
-            )
-            gt_wav = librosa.resample(gt_wav, orig_sr=gt_sr, target_sr=gen_sr)
-
-        # Step5: cache for batch processing
-        utterance_info = (key, gen_wav, gt_wav, gen_sr, text)
-
-        cache_info.append(utterance_info)
-        if len(cache_info) == batch_size:
-            # Process after a batch is collected
-            score_info.extend(process_cache_info(cache_info, score_modules, f))
-            cache_info = []
-        else:
-            # continue collect the batch
             continue
 
     # Process left-over batch
