@@ -9,23 +9,8 @@ import json
 import os
 
 import numpy as np
-import importlib
-import inspect
-import sys
-import audiobox_aesthetics
 
 try:
-    # Print module location if available
-    spec = importlib.util.find_spec("audiobox_aesthetics")
-    if spec:
-        print(f"audiobox_aesthetics location: {spec.origin}")
-        
-        # Import and print all functions
-        for name, obj in inspect.getmembers(audiobox_aesthetics):
-            if inspect.isfunction(obj):
-                print(f"Function: {name}")
-            elif inspect.ismodule(obj):
-                print(f"Submodule: {name}")
     import audiobox_aesthetics.infer
     import audiobox_aesthetics.utils
 except ImportError:

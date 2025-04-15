@@ -19,7 +19,7 @@ except ImportError:
     Nomad = None
 
 
-def nomad_setup(use_gpu=False, cache_dir="./nomad_pt-models"):
+def nomad_setup(use_gpu=False, cache_dir="versa_cache/nomad_pt-models"):
     if use_gpu:
         device = "cuda"
     else:

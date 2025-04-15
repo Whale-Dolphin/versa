@@ -12,7 +12,7 @@ VERSA (Versatile Evaluation of Speech and Audio) is a comprehensive toolkit for 
 
 ## 🚀 Features
 
-- **Comprehensive**: 80+ metrics covering perceptual quality, intelligibility, and technical measurements (check [full metrics documentation](https://github.com/wavlab-speech/versa/blob/main/supported_metrics.md) for a complete list)
+- **Comprehensive**: 80+ metrics covering perceptual quality, intelligibility, and technical measurements (check [full metrics documentation](https://github.com/wavlab-speech/versa/blob/main/docs/supported_metrics.md) for a complete list)
 - **Integrated**: Tightly integrated with [ESPnet](https://github.com/espnet/espnet.git)
 - **Flexible**: Support for various input formats (file paths, SCP files, Kaldi-style ARKs)
 - **Scalable**: Built-in support for distributed evaluation using Slurm
@@ -126,7 +126,7 @@ VERSA organizes metrics into four categories:
 3. **Non-match Metrics** - Metrics that work with non-matching references or information from other modalities
 4. **Distributional Metrics** - Metrics that evaluate statistical properties of audio collections
 
-*See the [full metrics documentation](https://github.com/wavlab-speech/versa/blob/main/supported_metrics.md) for a complete list with references.*
+*See the [full metrics documentation](https://github.com/wavlab-speech/versa/blob/main/docs/supported_metrics.md) for a complete list with references.*
 
 ## 📝 Citation
 
@@ -154,11 +154,11 @@ url={https://openreview.net/forum?id=zU0hmbnyQm}
 
 ## 🙏 Acknowledgement
 
-We sincerely thank all the authors of the open-source implementations listed in our [metrics documentation](https://github.com/wavlab-speech/versa/blob/main/supported_metrics.md).
+We sincerely thank all the authors of the open-source implementations listed in our [metrics documentation](https://github.com/wavlab-speech/versa/blob/main/docs/supported_metrics.md).
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. Please check the [contributing guideline](https://github.com/wavlab-speech/versa/blob/main/contributing.md) first.
+Contributions are welcome! Please feel free to submit a Pull Request. Please check the [contributing guideline](https://github.com/wavlab-speech/versa/blob/main/docs/contributing.md) first.
 
 ## 📄 License
 

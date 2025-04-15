@@ -120,13 +120,13 @@
 # scoreq (reference-based) metric
 # -- scoreq_ref: scoreq reference-based model
 - name: scoreq_ref
-  data_domain: synthetic
+  data_domain: natrual
   model_cache: versa_cache/scoreq_pt-models
 
 # scoreq (non-reference-based) metric
 # -- scoreq_nr: scoreq non-reference-based model
 - name: scoreq_nr
-  data_domain: synthetic
+  data_domain: natural
   model_cache: versa_cache/scoreq_pt-models
 
 # Speech Enhancement-based Metrics

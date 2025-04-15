@@ -10,6 +10,7 @@ import soundfile as sf
 import yaml
 from tqdm import tqdm
 
+from versa.metrics import STR_METRIC, NUM_METRIC
 from versa.utils_shared import (
     check_all_same,
     check_minimum_length,
@@ -43,6 +44,12 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
     for config in score_config:
         print(config, flush=True)
         if config["name"] == "mcd_f0":
+            if not use_gt:
+                logging.warning(
+                    "Cannot use mcd/f0 metrics because no gt audio is provided"
+                )
+                continue
+
             logging.info("Loading MCD & F0 evaluation...")
             from versa import mcd_f0
 
@@ -508,7 +515,9 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
             )
 
             noresqa_model = noresqa_model_setup(
-                metric_type=config.get("metric_type", 0), use_gpu=use_gpu
+                metric_type=config.get("metric_type", 0),
+                cache_dir=config.get("cache_dir", "versa_cache/noresqa_model"),
+                use_gpu=use_gpu,
             )
             score_modules["noresqa"] = {
                 "module": noresqa_metric,
@@ -782,20 +791,14 @@ def load_score_modules(score_config, use_gt=True, use_gt_text=False, use_gpu=Fal
 def process_cache_info(cache_info, score_modules, output_file):
     batch_score_info = []
     for utt_info in cache_info:
-        try:
-            key, gen_wav, gt_wav, gen_sr, text = utt_info
-            utt_score = {"key": key}
-            utt_score.update(
-                use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text)
-            )
-            batch_score_info.append(utt_score)
-            if output_file is not None:
-                output_file.write(f"{utt_score}\n")
-        except Exception as e:
-            logging.warning(
-                f"Error in processing cache info: {e}. Skipping this utterance."
-            )
-            continue
+        key, gen_wav, gt_wav, gen_sr, text = utt_info
+        utt_score = {"key": key}
+        utt_score.update(
+            use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text)
+        )
+        batch_score_info.append(utt_score)
+        if output_file is not None:
+            output_file.write(f"{utt_score}\n")
     return batch_score_info
 
 
@@ -959,7 +962,6 @@ def use_score_modules(score_modules, gen_wav, gt_wav, gen_sr, text=None):
                 gen_sr,
                 custom_prompt=score_modules[key]["prompt"],
             )
-            print("score: {}".format(score), flush=True)
         else:
             raise NotImplementedError(f"Not supported {key}")
 
@@ -981,98 +983,91 @@ def list_scoring(
         f = open(output_file, "w", encoding="utf-8")
     else:
         f = None
-    print(f"Processing:{gen_files}")
 
     score_info = []
     cache_info = []  # for batch processing
     for key in tqdm(gen_files.keys()):
-        try:
-            # Step1: load source speech and conduct basic checks
-            gen_sr, gen_wav = load_audio(gen_files[key], io)
-            gen_wav = wav_normalize(gen_wav)
+        # Step1: load source speech and conduct basic checks
+        gen_sr, gen_wav = load_audio(gen_files[key], io)
+        gen_wav = wav_normalize(gen_wav)
+
+        # length check
+        if not check_minimum_length(gen_wav.shape[0] / gen_sr, score_modules.keys()):
+            logging.warning(
+                "audio {} (generated, length {}) is too short to be evaluated with some metric metrics, skipping".format(
+                    key, gen_wav.shape[0] / gen_sr
+                )
+            )
+            continue
+
+        # Step2: load reference (gt) speech and conduct basic checks
+        if gt_files is not None:
+            if key not in gen_files.keys():
+                logging.warning(
+                    "key {} not found in ground truth files though provided, skipping".format(
+                        key
+                    )
+                )
+                continue
+
+            gt_sr, gt_wav = load_audio(gt_files[key], io)
+            gt_wav = wav_normalize(gt_wav)
+
+            # check ground truth audio files
+            if check_all_same(gt_wav):
+                logging.warning(
+                    "gt audio of key {} has only the same value, skipping".format(key)
+                )
+                continue
 
             # length check
-            if not check_minimum_length(gen_wav.shape[0] / gen_sr, score_modules.keys()):
+            if not check_minimum_length(gt_wav.shape[0] / gt_sr, score_modules.keys()):
                 logging.warning(
-                    "audio {} (generated, length {}) is too short to be evaluated with some metric metrics, skipping".format(
-                        key, gen_wav.shape[0] / gen_sr
+                    "audio {} (ground truth, length {}) is too short to be evaluated with many metrics, skipping".format(
+                        key, gt_wav.shape[0] / gt_sr
                     )
                 )
                 continue
+        else:
+            gt_wav = None
+            gt_sr = None
 
-            # Step2: load reference (gt) speech and conduct basic checks
-            if gt_files is not None:
-                if key not in gen_files.keys():
-                    logging.warning(
-                        "key {} not found in ground truth files though provided, skipping".format(
-                            key
-                        )
-                    )
-                    continue
-
-                gt_sr, gt_wav = load_audio(gt_files[key], io)
-                gt_wav = wav_normalize(gt_wav)
-
-                # check ground truth audio files
-                if check_all_same(gt_wav):
-                    logging.warning(
-                        "gt audio of key {} has only the same value, skipping".format(key)
-                    )
-                    continue
-
-                # length check
-                if not check_minimum_length(gt_wav.shape[0] / gt_sr, score_modules.keys()):
-                    logging.warning(
-                        "audio {} (ground truth, length {}) is too short to be evaluated with many metrics, skipping".format(
-                            key, gt_wav.shape[0] / gt_sr
-                        )
-                    )
-                    continue
-            else:
-                gt_wav = None
-                gt_sr = None
-
-            # Step3: load text information if provided
-            text = None
-            if text_info is not None:
-                if key not in text_info.keys():
-                    logging.warning(
-                        "key {} not found in ground truth transcription though provided, skipping".format(
-                            key
-                        )
-                    )
-                    continue
-                else:
-                    text = text_info[key]
-
-            # Step4: check if the sampling rate of generated and gt audio are the same
-            if gt_sr is not None and gen_sr > gt_sr:
+        # Step3: load text information if provided
+        text = None
+        if text_info is not None:
+            if key not in text_info.keys():
                 logging.warning(
-                    "Resampling the generated audio to match the ground truth audio"
+                    "key {} not found in ground truth transcription though provided, skipping".format(
+                        key
+                    )
                 )
-                gen_wav = librosa.resample(gen_wav, orig_sr=gen_sr, target_sr=gt_sr)
-                gen_sr = gt_sr
-            elif gt_sr is not None and gen_sr < gt_sr:
-                logging.warning(
-                    "Resampling the ground truth audio to match the generated audio"
-                )
-                gt_wav = librosa.resample(gt_wav, orig_sr=gt_sr, target_sr=gen_sr)
-
-            # Step5: cache for batch processing
-            utterance_info = (key, gen_wav, gt_wav, gen_sr, text)
-
-            cache_info.append(utterance_info)
-            if len(cache_info) == batch_size:
-                # Process after a batch is collected
-                score_info.extend(process_cache_info(cache_info, score_modules, f))
-                cache_info = []
-            else:
-                # continue collect the batch
                 continue
-        except Exception as e:
+            else:
+                text = text_info[key]
+
+        # Step4: check if the sampling rate of generated and gt audio are the same
+        if gt_sr is not None and gen_sr > gt_sr:
             logging.warning(
-                "Error in scoring {}: {}".format(gen_files[key], str(e))
+                "Resampling the generated audio to match the ground truth audio"
             )
+            gen_wav = librosa.resample(gen_wav, orig_sr=gen_sr, target_sr=gt_sr)
+            gen_sr = gt_sr
+        elif gt_sr is not None and gen_sr < gt_sr:
+            logging.warning(
+                "Resampling the ground truth audio to match the generated audio"
+            )
+            gt_wav = librosa.resample(gt_wav, orig_sr=gt_sr, target_sr=gen_sr)
+
+        # Step5: cache for batch processing
+        utterance_info = (key, gen_wav, gt_wav, gen_sr, text)
+
+        cache_info.append(utterance_info)
+        if len(cache_info) == batch_size:
+            # Process after a batch is collected
+            score_info.extend(process_cache_info(cache_info, score_modules, f))
+            cache_info = []
+        else:
+            # continue collect the batch
             continue
 
     # Process left-over batch
@@ -1085,12 +1080,10 @@ def list_scoring(
 def load_summary(score_info):
     summary = {}
     for key in score_info[0].keys():
-        if "text" in key or "vad" in key or "language" in key or key == "key":
+        if key in STR_METRIC or key == "key":
             # NOTE(jiatong): skip text cases
             continue
-        for score in score_info:
-            print(score[key])
-            summary[key] = sum([score[key]])
+        summary[key] = sum([score[key] for score in score_info])
         if "_wer" not in key and "_cer" not in key:
             # Average for non-WER/CER metrics
             summary[key] /= len(score_info)
