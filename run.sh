@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -p GPU-shared
-#SBATCH --gpus=v100-32:1
-#SBATCH -t 96:00:00
+#SBATCH --gpus=h100-80:1
+#SBATCH -t 48:00:00
 
 source /ocean/projects/cis210027p/ycheng9/miniconda3/bin/activate versa_test
 
@@ -14,7 +14,8 @@ python -W ignore versa/bin/scorer.py \
   --gt "$1" \
   --pred "$1" \
   --output_file "$2" \
-  --io kaldi
+  --io kaldi \
+  --use_gpu True
 
 # Optional: Add error handling
 if [ $? -ne 0 ]; then

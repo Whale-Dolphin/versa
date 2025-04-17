@@ -190,7 +190,7 @@ for ((i=0; i<${#pred_list[@]}; i++)); do
             ./egs/run_gpu.sh \
                 "${sub_pred_wavscp}" \
                 "${sub_gt_wavscp}" \
-                "${SCORE_DIR}/result/$(basename "${sub_pred_wavscp}").result.gpu.txt" \
+                "${SCORE_DIR}/result/$(basename "${sub_pred_wavscp}").result.gpu.txt" \wo
                 egs/speech_gpu.yaml)
 
         echo "GPU:${gpu_job_id} CHUNK:$((i+1))/${#pred_list[@]} FILE:${job_prefix}" >> "${JOB_IDS_FILE}"
